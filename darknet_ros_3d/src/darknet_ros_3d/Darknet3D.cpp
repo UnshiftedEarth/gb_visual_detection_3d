@@ -29,6 +29,12 @@
 #include <pcl/point_types.h>
 #include <pcl/filters/extract_indices.h>
 #include <visualization_msgs/msg/marker.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/core/types.hpp>
+#include <cv_bridge/cv_bridge.h>
+#include <image_geometry/pinhole_camera_model.h>
+#include <boost/foreach.hpp>
 #include <algorithm>
 #include <memory>
 #include <limits>
