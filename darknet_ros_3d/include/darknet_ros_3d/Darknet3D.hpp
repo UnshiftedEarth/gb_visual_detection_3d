@@ -25,9 +25,11 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <image_geometry/pinhole_camera_model.h>
 #include <string>
 #include <vector>
 #include "darknet_ros_msgs/msg/bounding_boxes.hpp"
@@ -56,6 +58,7 @@ private:
 
   void pointCloudCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void darknetCb(const darknet_ros_msgs::msg::BoundingBoxes::SharedPtr msg);
+  void infoCb(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
   void calculate_boxes(
     sensor_msgs::msg::PointCloud2 cloud_pc2, pcl::PointCloud<pcl::PointXYZ> cloud,
     gb_visual_detection_3d_msgs::msg::BoundingBoxes3d * boxes,
@@ -63,12 +66,14 @@ private:
   void publish_markers(gb_visual_detection_3d_msgs::msg::BoundingBoxes3d boxes);
   
   pcl::PointCloud<pcl::PointXYZ> calculate_view_points(
-        pcl::PointCloud<pcl::PointXYZ> cloud);
+        pcl::PointCloud<pcl::PointXYZ> cloud,
+        image_geometry::PinholeCameraModel cam_model);
 
 
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointCloud_sub_;
   rclcpp::Subscription<darknet_ros_msgs::msg::BoundingBoxes>::SharedPtr darknet_ros_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
 
   rclcpp_lifecycle::LifecyclePublisher
   <gb_visual_detection_3d_msgs::msg::BoundingBoxes3d>::SharedPtr darknet3d_pub_;
@@ -91,6 +96,7 @@ private:
   tf2_ros::TransformListener tfListener_;
 
   sensor_msgs::msg::PointCloud2 point_cloud_;
+  sensor_msgs::msg::CameraInfo camera_info_;
   rclcpp::Time last_detection_ts_;
   std::string input_bbx_topic_;
   std::string output_bbx3d_topic_;

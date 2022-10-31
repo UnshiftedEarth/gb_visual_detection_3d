@@ -24,6 +24,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -42,7 +43,6 @@
 #include <fstream>
 #include "gb_visual_detection_3d_msgs/msg/bounding_box3d.hpp"
 
-using std::placeholders::_1;
 using CallbackReturnT =
     rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
@@ -70,6 +70,9 @@ namespace darknet_ros_3d
 
         darknet_ros_sub_ = this->create_subscription<darknet_ros_msgs::msg::BoundingBoxes>(
             input_bbx_topic_, 1, std::bind(&Darknet3D::darknetCb, this, std::placeholders::_1));
+
+        camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
+            "/camera/camera_info", 1, std::bind(&Darknet3D::infoCb, this, std::placeholders::_1));
 
         darknet3d_pub_ = this->create_publisher<gb_visual_detection_3d_msgs::msg::BoundingBoxes3d>(
             output_bbx3d_topic_, 100);
@@ -105,31 +108,38 @@ namespace darknet_ros_3d
         last_detection_ts_ = clock_.now();
     }
 
+    void
+    Darknet3D::infoCb(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
+    {
+        camera_info_ = *msg;
+        last_detection_ts_ = clock_.now();
+    }
+
     pcl::PointCloud<pcl::PointXYZ>
     Darknet3D::calculate_view_points(
-        pcl::PointCloud<pcl::PointXYZ> cloud)
+        pcl::PointCloud<pcl::PointXYZ> cloud,
+        image_geometry::PinholeCameraModel cam_model)
     {
-        // In 3D space use this constant to calculate the field of view lines for 
-        // x = constant * y and x = -constant * y
-        // This line constant is calibrated for the camera
-        double line_constant = 1.78571;
         // First we check which points are in our field of view
-        std::vector<pcl::PointXYZ> points_in_view;
         pcl::PointCloud<pcl::PointXYZ>::Ptr new_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::copyPointCloud(cloud, *new_cloud);
         pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
         pcl::ExtractIndices<pcl::PointXYZ> extract;
+
         for (std::size_t i = 0; i < new_cloud->size(); i++) {
             int xx = new_cloud->points[i].x;
             int yy = new_cloud->points[i].y;
-            if (xx >= 0 && (line_constant * std::abs(yy)) < xx && xx < 20) {
-                // We know the point is in our field of view
-                if (std::isnan(xx))
-                {
-                    continue;
-                }
+            int zz = new_cloud->points[i].z;
 
-                points_in_view.push_back(new_cloud->points[i]);              
+            cv::Point3d point3d;
+            point3d = cv::Point3d(-yy, -zz, xx);
+            cv::Point2d point2d = cam_model.project3dToPixel(point3d);
+
+            if (point2d.x > 0 && point2d.x < 1920 && point2d.y > 0 && point2d.y < 1080 && xx > 0) {
+                // We know the point is in our field of view
+                if (std::isnan(xx)) {
+                    continue;
+                }           
             } else {
                 inliers->indices.push_back(i);
             }
@@ -154,7 +164,7 @@ namespace darknet_ros_3d
             view_points_pub_->publish(raw_pointcloud);
         }
 
-        // return the vector containing the points in the view
+        // return the new cloud containing the points in the view
         return *new_cloud;
     }
 
@@ -168,18 +178,18 @@ namespace darknet_ros_3d
         boxes->header.stamp = cloud_pc2.header.stamp;
         boxes->header.frame_id = cloud_pc2.header.frame_id;
 
-        double line_constant_h = 1.78571;
-        double line_constant_v = 3.1746;
-        double camera_width = 1920;
-        double camera_height = 1080;
         double ground_tolerance = 0.1;
 
+        image_geometry::PinholeCameraModel cam_model;
+        cam_model.fromCameraInfo(camera_info_);
+
         std::vector<pcl::PointCloud<pcl::PointXYZ>> point_cloud_list;
+        pcl::PointCloud<pcl::PointXYZ> points_in_view = calculate_view_points(cloud, cam_model);
+
         // Loop through the bounding boxes
         for (auto bbx : original_bboxes_)
         {
             // setup point indices to extract only the points on the human
-            pcl::PointCloud<pcl::PointXYZ> points_in_view = calculate_view_points(cloud);
             pcl::PointCloud<pcl::PointXYZ>::Ptr new_cloud(new pcl::PointCloud<pcl::PointXYZ>);
             pcl::copyPointCloud(points_in_view, *new_cloud);
             pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
@@ -190,10 +200,6 @@ namespace darknet_ros_3d
                 // RCLCPP_INFO(this->get_logger(), "Skipped bounding box");
                 continue;
             }
-
-            int center_x, center_y;
-            center_x = (bbx.xmax + bbx.xmin) / 2;
-            center_y = (bbx.ymax + bbx.ymin) / 2;
 
             float maxx, minx, maxy, miny, maxz, minz;
             maxx = maxy = maxz = -std::numeric_limits<float>::max();
@@ -210,29 +216,19 @@ namespace darknet_ros_3d
                     RCLCPP_INFO(this->get_logger(), "xmin or xmax had value of 0, skipping");
                     continue;
                 }
+                if (zz < -ground_z + ground_tolerance) {
+                    continue;
+                }
 
-                // the width of the horizontal camera view in XYZ space
-                double lidar_width = (xx/line_constant_h)*2;
-                // the scaling factor to convert XYZ to pixels
-                double scale = camera_width/lidar_width;
-                // distance in meters lidar point is from left edge of view
-                double point_pixel_edge_h = (xx/line_constant_h) - yy;
-                // The horizontal pixel approximation of the lidar point
-                double lidar_pixel_loc_h = point_pixel_edge_h * scale;
+                cv::Point3d point3d;
+                point3d = cv::Point3d(-yy, -zz, xx);
+                cv::Point2d point2d = cam_model.project3dToPixel(point3d);
 
-                double lidar_height = (xx/line_constant_v)*2;
-                double scale2 = camera_height/lidar_height;
-                // distance from bottom view of camera
-                double point_pixel_edge_v = lidar_height - ((xx/line_constant_v) - zz);
-                double lidar_pixel_loc_v = point_pixel_edge_v * scale2;
-                // RCLCPP_INFO(this->get_logger(), "Lidar loc %f Edge %f Scale %f Ymax %ld Ymin %ld",
-                //     lidar_pixel_loc_v, point_pixel_edge_v, scale2, bbx.ymax, bbx.ymin);
+                // RCLCPP_INFO(this->get_logger(), "Pixel X %s Pixel Y %s",
+                //     std::to_string(point2d.x).c_str(), std::to_string(point2d.y).c_str());
 
-                if (lidar_pixel_loc_h >= bbx.xmin && lidar_pixel_loc_h <= bbx.xmax && 
-                    lidar_pixel_loc_v >= (camera_height - bbx.ymax) && lidar_pixel_loc_v <= (camera_height - bbx.ymin) && 
-                    zz > -ground_z + ground_tolerance) {
-                // if (lidar_pixel_loc_h >= bbx.xmin && lidar_pixel_loc_h <= bbx.xmax && zz > -ground_z + ground_tolerance) {
-                    // We know the point is on the human
+                if (point2d.x >= bbx.xmin && point2d.x <= bbx.xmax && 
+                    point2d.y >= bbx.ymin && point2d.y <= bbx.ymax) {
 
                     maxx = std::max(xx, maxx);
                     maxy = std::max(yy, maxy);
@@ -432,17 +428,10 @@ namespace darknet_ros_3d
         tf2::doTransform<sensor_msgs::msg::PointCloud2>(point_cloud_, local_pointcloud, camera_transform);
 
         pcl::PCLPointCloud2 pcl_pc2;
-        pcl_conversions::toPCL(local_pointcloud, pcl_pc2);
+        pcl_conversions::toPCL(point_cloud_, pcl_pc2);
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::fromPCLPointCloud2(pcl_pc2, *cloud);
         
-        // tf2::Stamped<tf2::Transform> stamped_transform;
-        // tf2::fromMsg(base_transform, stamped_transform);
-        // tf2::Vector3 vector = stamped_transform.getOrigin();
-        // double x = vector.getX();
-        // double y = vector.getY();
-        // double z = vector.getZ();
-        // RCLCPP_INFO(this->get_logger(), "Transform base X %d Y %d Z %d", x, y, z);
         float ground_z = base_transform.transform.translation.z;
 
         calculate_boxes(local_pointcloud, *cloud, &msg, ground_z);
