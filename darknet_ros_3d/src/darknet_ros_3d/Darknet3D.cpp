@@ -59,7 +59,7 @@ namespace darknet_ros_3d
         this->declare_parameter("output_bbx3d_topic", "/darknet_ros_3d/bounding_boxes");
         this->declare_parameter("point_cloud_topic", "/velodyne_points");
         this->declare_parameter("working_frame", "camera_link");
-        this->declare_parameter("maximum_detection_threshold", 0.3f);
+        this->declare_parameter("ground_detection_threshold", 0.3f);
         this->declare_parameter("minimum_probability", 0.3f);
         // this->declare_parameter("interested_classes", "/darknet_ros/check_for_objects");
 
@@ -190,9 +190,6 @@ namespace darknet_ros_3d
         boxes->header.stamp = cloud_pc2.header.stamp;
         boxes->header.frame_id = cloud_pc2.header.frame_id;
 
-        // Ground tolerance to ignore lidar points on the ground
-        double ground_tolerance = 0.1;
-
         // Create camera model object and load from the camera info topic
         image_geometry::PinholeCameraModel cam_model;
         cam_model.fromCameraInfo(camera_info_);
@@ -243,7 +240,7 @@ namespace darknet_ros_3d
                     continue;
                 }
                 // Save time by ignore lidar points on the ground
-                if (zz < -ground_z + ground_tolerance) {
+                if (zz < -ground_z + ground_detection_threshold_) {
                     continue;
                 }
 
@@ -287,13 +284,12 @@ namespace darknet_ros_3d
             // bbx_msg.zmax = maxz;
 
             float scale = minx/center.z;
-
-            bbx_msg.xmin = center.z * scale -0.1;
-            bbx_msg.xmax = center.z * scale +0.1;
-            bbx_msg.ymin = (-center.x) * scale -0.2;
-            bbx_msg.ymax = (-center.x) * scale +0.2;
-            bbx_msg.zmin = (-center.y) * scale -0.8;
-            bbx_msg.zmax = (-center.y) * scale +0.8;
+            bbx_msg.xmin = center.z * scale - (1 / scale);            
+            bbx_msg.xmax = center.z * scale + (1 / scale);            
+            bbx_msg.ymin = (-center.x) * scale - (1 / scale);           
+            bbx_msg.ymax = (-center.x) * scale + (1 / scale);           
+            bbx_msg.zmin = (-center.y) * scale - (1 - (1 / scale));            
+            bbx_msg.zmax = (-center.y) * scale + (1 - (1 / scale));
 
             // Add checks if boxes aren't square
             // float distx = maxx - minx;
@@ -499,7 +495,7 @@ namespace darknet_ros_3d
         this->get_parameter("output_bbx3d_topic", output_bbx3d_topic_);
         this->get_parameter("point_cloud_topic", pointcloud_topic_);
         this->get_parameter("working_frame", working_frame_);
-        this->get_parameter("maximum_detection_threshold", maximum_detection_threshold_);
+        this->get_parameter("ground_detection_threshold", ground_detection_threshold_);
         this->get_parameter("minimum_probability", minimum_probability_);
         this->get_parameter("interested_classes", interested_classes_);
 

@@ -104,7 +104,7 @@ private:
   std::string working_frame_;
   std::vector<std::string> interested_classes_ = {};
   std::vector<darknet_ros_msgs::msg::BoundingBox> original_bboxes_;
-  float maximum_detection_threshold_, minimum_probability_;
+  float ground_detection_threshold_, minimum_probability_;
   bool pc_received_;
 };
 

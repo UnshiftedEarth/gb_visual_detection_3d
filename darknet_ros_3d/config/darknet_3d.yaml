@@ -4,6 +4,6 @@ darknet3d_node:
     output_bbx3d_topic: /darknet_ros_3d/bounding_boxes
     point_cloud_topic: /velodyne_points
     working_frame: camera_link
-    maximum_detection_threshold: 0.2
+    ground_detection_threshold: 0.5
     minimum_probability: 0.4
     interested_classes: ["person"]
