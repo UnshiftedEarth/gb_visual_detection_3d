@@ -80,9 +80,6 @@ namespace darknet_ros_3d
         markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/darknet_ros_3d/markers", 1);
 
-        view_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/darknet_ros_3d/view", 1);
-
         view_points_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
             "/darknet_ros_3d/view_points", 1);
 
@@ -201,9 +198,11 @@ namespace darknet_ros_3d
         // Loop through the bounding boxes
         for (auto bbx : original_bboxes_)
         {
+            // Center of darknet bounding box
             int center_x = (bbx.xmax + bbx.xmin) / 2;
             int center_y = (bbx.ymax + bbx.ymin) / 2;
 
+            // Project the center of the darknet bounding box to a unit vector in 3d space
             cv::Point3d center;
             center = cam_model.projectPixelTo3dRay(cv::Point2d(center_x, center_y));
 
@@ -241,6 +240,8 @@ namespace darknet_ros_3d
                 }
                 // Save time by ignore lidar points on the ground
                 if (zz < -ground_z + ground_detection_threshold_) {
+                    // Remove the point not on the human 
+                    inliers->indices.push_back(i);
                     continue;
                 }
 
@@ -276,29 +277,15 @@ namespace darknet_ros_3d
             bbx_msg.object_name = bbx.class_id;
             bbx_msg.probability = bbx.probability;
 
-            // bbx_msg.xmin = minx;
-            // bbx_msg.xmax = maxx;
-            // bbx_msg.ymin = miny;
-            // bbx_msg.ymax = maxy;
-            // bbx_msg.zmin = minz;
-            // bbx_msg.zmax = maxz;
-
+            // Scale the projected 3d unit vector to the location of the person
             float scale = minx/center.z;
+            // Dynamically set the bounding box 
             bbx_msg.xmin = center.z * scale - (1 / scale);            
             bbx_msg.xmax = center.z * scale + (1 / scale);            
             bbx_msg.ymin = (-center.x) * scale - (1 / scale);           
             bbx_msg.ymax = (-center.x) * scale + (1 / scale);           
             bbx_msg.zmin = (-center.y) * scale - (1 - (1 / scale));            
             bbx_msg.zmax = (-center.y) * scale + (1 - (1 / scale));
-
-            // Add checks if boxes aren't square
-            // float distx = maxx - minx;
-            // float disty = maxy - miny;
-            // if (distx > disty) {
-            //     bbx_msg.xmax = minx + disty;
-            // } else if (disty > distx) {
-            //     bbx_msg.ymax = miny + distx;
-            // }
 
             boxes->bounding_boxes.push_back(bbx_msg);
 
@@ -337,7 +324,6 @@ namespace darknet_ros_3d
     Darknet3D::publish_markers(gb_visual_detection_3d_msgs::msg::BoundingBoxes3d boxes)
     {
         visualization_msgs::msg::MarkerArray msg;
-        visualization_msgs::msg::MarkerArray view;
 
         int counter_id = 0;
         for (auto bb : boxes.bounding_boxes)
@@ -371,63 +357,9 @@ namespace darknet_ros_3d
             msg.markers.push_back(bbx_marker);
         }
 
-        // TODO: This can be removed because the lines don't need to be calibrated
-        for (int i = 0; i < 4; i++) {
-            visualization_msgs::msg::Marker line;
-            geometry_msgs::msg::Point point1;
-            point1.x = 0;
-            point1.y = 0;
-            point1.z = 0;
-            geometry_msgs::msg::Point point2;
-            point2.x = 50;
-            if (i == 0) {
-                point2.y = 28;
-                point2.z = 0;
-            } else if (i == 1) {
-                point2.y = -28;
-                point2.z = 0;
-            } else if (i == 2) {
-                point2.y = 0;
-                point2.z = 15.75;
-            } else {
-                point2.y = 0;
-                point2.z = -15.75;
-            }
-            
-            std::vector<geometry_msgs::msg::Point> point_list{point1, point2}; 
-
-            line.header.frame_id = working_frame_;
-            line.header.stamp = boxes.header.stamp;
-            line.ns = "darknet3d";
-            line.id = i;
-            line.type = visualization_msgs::msg::Marker::ARROW;
-            line.action = visualization_msgs::msg::Marker::ADD;
-            line.frame_locked = false;
-            line.points = point_list;
-            line.color.b = 229;
-            line.color.g = 204;
-            line.color.r = 255.0;
-            line.color.a = 0.4;
-            line.scale.x = 0.3;
-            line.scale.y = 0.5;
-            line.scale.z = 0;
-            line.lifetime = rclcpp::Duration::from_seconds(1.0); //
-            if (i == 0) {
-                line.text = "Left";
-            } else {
-                line.text = "Right";
-            }
-
-            view.markers.push_back(line);
-        }
-
         if (markers_pub_->is_activated())
         {
             markers_pub_->publish(msg);
-        }
-        if (view_pub_->is_activated())
-        {
-            view_pub_->publish(view);
         }
     }
 
@@ -510,7 +442,6 @@ namespace darknet_ros_3d
 
         darknet3d_pub_->on_activate();
         markers_pub_->on_activate();
-        view_pub_->on_activate();
         view_points_pub_->on_activate();
         human_points_pub_->on_activate();
 
@@ -525,7 +456,6 @@ namespace darknet_ros_3d
 
         darknet3d_pub_->on_deactivate();
         markers_pub_->on_deactivate();
-        view_pub_->on_deactivate();
         view_points_pub_->on_deactivate();
         human_points_pub_->on_deactivate();
 
@@ -540,7 +470,6 @@ namespace darknet_ros_3d
 
         darknet3d_pub_.reset();
         markers_pub_.reset();
-        view_pub_.reset();
         view_points_pub_.reset();
         human_points_pub_.reset();
 
@@ -555,7 +484,6 @@ namespace darknet_ros_3d
 
         darknet3d_pub_.reset();
         markers_pub_.reset();
-        view_pub_.reset();
         view_points_pub_.reset();
         human_points_pub_.reset();
 

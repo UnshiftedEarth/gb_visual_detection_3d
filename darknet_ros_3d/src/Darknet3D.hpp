@@ -82,9 +82,6 @@ private:
   <visualization_msgs::msg::MarkerArray>::SharedPtr markers_pub_;
 
   rclcpp_lifecycle::LifecyclePublisher
-  <visualization_msgs::msg::MarkerArray>::SharedPtr view_pub_;
-
-  rclcpp_lifecycle::LifecyclePublisher
   <sensor_msgs::msg::PointCloud2>::SharedPtr view_points_pub_;
 
   rclcpp_lifecycle::LifecyclePublisher
