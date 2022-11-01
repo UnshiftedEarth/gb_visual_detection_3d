@@ -204,6 +204,12 @@ namespace darknet_ros_3d
         // Loop through the bounding boxes
         for (auto bbx : original_bboxes_)
         {
+            int center_x = (bbx.xmax + bbx.xmin) / 2;
+            int center_y = (bbx.ymax + bbx.ymin) / 2;
+
+            cv::Point3d center;
+            center = cam_model.projectPixelTo3dRay(cv::Point2d(center_x, center_y));
+
             // setup point indices to extract only the points on the human
             pcl::PointCloud<pcl::PointXYZ>::Ptr new_cloud(new pcl::PointCloud<pcl::PointXYZ>);
             pcl::copyPointCloud(points_in_view, *new_cloud);
@@ -273,21 +279,30 @@ namespace darknet_ros_3d
             bbx_msg.object_name = bbx.class_id;
             bbx_msg.probability = bbx.probability;
 
-            bbx_msg.xmin = minx;
-            bbx_msg.xmax = maxx;
-            bbx_msg.ymin = miny;
-            bbx_msg.ymax = maxy;
-            bbx_msg.zmin = minz;
-            bbx_msg.zmax = maxz;
+            // bbx_msg.xmin = minx;
+            // bbx_msg.xmax = maxx;
+            // bbx_msg.ymin = miny;
+            // bbx_msg.ymax = maxy;
+            // bbx_msg.zmin = minz;
+            // bbx_msg.zmax = maxz;
+
+            float scale = minx/center.z;
+
+            bbx_msg.xmin = center.z * scale -0.1;
+            bbx_msg.xmax = center.z * scale +0.1;
+            bbx_msg.ymin = (-center.x) * scale -0.2;
+            bbx_msg.ymax = (-center.x) * scale +0.2;
+            bbx_msg.zmin = (-center.y) * scale -0.8;
+            bbx_msg.zmax = (-center.y) * scale +0.8;
 
             // Add checks if boxes aren't square
-            float distx = maxx - minx;
-            float disty = maxy - miny;
-            if (distx > disty) {
-                bbx_msg.xmax = minx + disty;
-            } else if (disty > distx) {
-                bbx_msg.ymax = miny + distx;
-            }
+            // float distx = maxx - minx;
+            // float disty = maxy - miny;
+            // if (distx > disty) {
+            //     bbx_msg.xmax = minx + disty;
+            // } else if (disty > distx) {
+            //     bbx_msg.ymax = miny + distx;
+            // }
 
             boxes->bounding_boxes.push_back(bbx_msg);
 
