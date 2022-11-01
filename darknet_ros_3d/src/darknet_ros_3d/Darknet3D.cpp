@@ -120,27 +120,39 @@ namespace darknet_ros_3d
         pcl::PointCloud<pcl::PointXYZ> cloud,
         image_geometry::PinholeCameraModel cam_model)
     {
-        // First we check which points are in our field of view
+        // First we setup a pcl point cloud and do the necessary conversions from a 
+        // raw sensor messages point cloud to a PCL object
         pcl::PointCloud<pcl::PointXYZ>::Ptr new_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::copyPointCloud(cloud, *new_cloud);
         pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
         pcl::ExtractIndices<pcl::PointXYZ> extract;
 
+        // loop through all points in the cloud to determine which lie in the camera's view
         for (std::size_t i = 0; i < new_cloud->size(); i++) {
+            // extract x y and z from the list of points
             int xx = new_cloud->points[i].x;
             int yy = new_cloud->points[i].y;
             int zz = new_cloud->points[i].z;
 
+            // Create a 3d point and project it onto the raw image from the camera sensor
             cv::Point3d point3d;
+            // 3d space axis is different from camera projection 3d space
             point3d = cv::Point3d(-yy, -zz, xx);
+            // 2d point has x and y that match width and height of camera image
             cv::Point2d point2d = cam_model.project3dToPixel(point3d);
 
-            if (point2d.x > 0 && point2d.x < 1920 && point2d.y > 0 && point2d.y < 1080 && xx > 0) {
+            // get the width and height of the image from the CameraInfo topic
+            int camera_width = camera_info_.width;
+            int camera_height = camera_info_.height;
+            // Check if the project 3d point onto pixels is within the darknet bounding box
+            // Also check if points are infront of us 
+            if (point2d.x > 0 && point2d.x < camera_width && point2d.y > 0 && point2d.y < camera_height && xx > 0) {
                 // We know the point is in our field of view
                 if (std::isnan(xx)) {
                     continue;
                 }           
             } else {
+                // Add the points not in the view to be removed
                 inliers->indices.push_back(i);
             }
         }
@@ -178,11 +190,14 @@ namespace darknet_ros_3d
         boxes->header.stamp = cloud_pc2.header.stamp;
         boxes->header.frame_id = cloud_pc2.header.frame_id;
 
+        // Ground tolerance to ignore lidar points on the ground
         double ground_tolerance = 0.1;
 
+        // Create camera model object and load from the camera info topic
         image_geometry::PinholeCameraModel cam_model;
         cam_model.fromCameraInfo(camera_info_);
 
+        // List to hold the points clouds that contain all the people in the frame
         std::vector<pcl::PointCloud<pcl::PointXYZ>> point_cloud_list;
         pcl::PointCloud<pcl::PointXYZ> points_in_view = calculate_view_points(cloud, cam_model);
 
@@ -195,31 +210,38 @@ namespace darknet_ros_3d
             pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
             pcl::ExtractIndices<pcl::PointXYZ> extract;
 
+            // Ignore bounding boxes with lower probabilities and all other classes
             if (bbx.probability < minimum_probability_ || bbx.class_id == "dont_show")
             {
                 // RCLCPP_INFO(this->get_logger(), "Skipped bounding box");
                 continue;
             }
 
+            // Setup maximum values for 3d boudning box
             float maxx, minx, maxy, miny, maxz, minz;
             maxx = maxy = maxz = -std::numeric_limits<float>::max();
             minx = miny = minz = std::numeric_limits<float>::max();
 
             // RCLCPP_INFO(this->get_logger(), "Start point loop");
 
+            // Loop through all points in the point cloud
             for (std::size_t i = 0; i < new_cloud->size(); i++) {
+                // Extract the xyz values from the point
                 float xx = new_cloud->points[i].x;
                 float yy = new_cloud->points[i].y;
                 float zz = new_cloud->points[i].z;
                 
+                // Skip check
                 if (bbx.xmin == 0 || bbx.xmax == 0) {
                     RCLCPP_INFO(this->get_logger(), "xmin or xmax had value of 0, skipping");
                     continue;
                 }
+                // Save time by ignore lidar points on the ground
                 if (zz < -ground_z + ground_tolerance) {
                     continue;
                 }
 
+                // Project 3d lidar point to 2d pixel point on the image
                 cv::Point3d point3d;
                 point3d = cv::Point3d(-yy, -zz, xx);
                 cv::Point2d point2d = cam_model.project3dToPixel(point3d);
@@ -227,9 +249,11 @@ namespace darknet_ros_3d
                 // RCLCPP_INFO(this->get_logger(), "Pixel X %s Pixel Y %s",
                 //     std::to_string(point2d.x).c_str(), std::to_string(point2d.y).c_str());
 
+                // Check if the project lidar point is within the darknet bounding box
                 if (point2d.x >= bbx.xmin && point2d.x <= bbx.xmax && 
                     point2d.y >= bbx.ymin && point2d.y <= bbx.ymax) {
 
+                    // Save the max and min values of all the lidar points
                     maxx = std::max(xx, maxx);
                     maxy = std::max(yy, maxy);
                     maxz = std::max(zz, maxz);
@@ -237,12 +261,14 @@ namespace darknet_ros_3d
                     miny = std::min(yy, miny);
                     minz = std::min(zz, minz);
                 } else {
+                    // Remove the point not on the human 
                     inliers->indices.push_back(i);
                 }
             }
 
             //RCLCPP_INFO(this->get_logger(), "Finished point loop");
 
+            // Create the custom 3d bounding box message
             gb_visual_detection_3d_msgs::msg::BoundingBox3d bbx_msg;
             bbx_msg.object_name = bbx.class_id;
             bbx_msg.probability = bbx.probability;
@@ -278,6 +304,7 @@ namespace darknet_ros_3d
         if (point_cloud_list.size() != 0) {
             result_cloud = point_cloud_list[0];
             for (int i = 1; i < point_cloud_list.size(); i++) {
+                // concat the point clouds
                 result_cloud += point_cloud_list[i];
             }
         }
@@ -333,6 +360,7 @@ namespace darknet_ros_3d
             msg.markers.push_back(bbx_marker);
         }
 
+        // TODO: This can be removed because the lines don't need to be calibrated
         for (int i = 0; i < 4; i++) {
             visualization_msgs::msg::Marker line;
             geometry_msgs::msg::Point point1;
@@ -425,13 +453,16 @@ namespace darknet_ros_3d
                          ex.what(), "quitting callback");
             return;
         }
+        // Transform the point cloud message origin to the camera 
         tf2::doTransform<sensor_msgs::msg::PointCloud2>(point_cloud_, local_pointcloud, camera_transform);
 
+        // Convert the raw point cloud message to a PCL point cloud
         pcl::PCLPointCloud2 pcl_pc2;
         pcl_conversions::toPCL(point_cloud_, pcl_pc2);
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::fromPCLPointCloud2(pcl_pc2, *cloud);
         
+        // Extract the z value from the base tf frame
         float ground_z = base_transform.transform.translation.z;
 
         calculate_boxes(local_pointcloud, *cloud, &msg, ground_z);
