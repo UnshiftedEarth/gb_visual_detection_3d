@@ -57,11 +57,15 @@ namespace darknet_ros_3d
 
         this->declare_parameter("darknet_ros_topic", "/darknet_ros/bounding_boxes");
         this->declare_parameter("output_bbx3d_topic", "/darknet_ros_3d/bounding_boxes");
+        this->declare_parameter("output_markers_topic", "/darknet_ros_3d/markers");
+        this->declare_parameter("output_view_points_topic", "/darknet_ros_3d/view_points");
+        this->declare_parameter("output_human_points_topic", "/darknet_ros_3d/human_points");
         this->declare_parameter("point_cloud_topic", "/velodyne_points");
+        this->declare_parameter("camera_info_topic", "/camera/camera_info");
         this->declare_parameter("working_frame", "camera_link");
+        this->declare_parameter("transform_frame", "base_link");
         this->declare_parameter("ground_detection_threshold", 0.3f);
         this->declare_parameter("minimum_probability", 0.3f);
-        // this->declare_parameter("interested_classes", "/darknet_ros/check_for_objects");
 
         this->configure();
 
@@ -72,19 +76,19 @@ namespace darknet_ros_3d
             input_bbx_topic_, 1, std::bind(&Darknet3D::darknetCb, this, std::placeholders::_1));
 
         camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-            "/camera/camera_info", 1, std::bind(&Darknet3D::infoCb, this, std::placeholders::_1));
+            camera_info_topic_, 1, std::bind(&Darknet3D::infoCb, this, std::placeholders::_1));
 
         darknet3d_pub_ = this->create_publisher<gb_visual_detection_3d_msgs::msg::BoundingBoxes3d>(
             output_bbx3d_topic_, 100);
 
         markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/darknet_ros_3d/markers", 1);
+            output_markers_topic_, 1);
 
         view_points_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-            "/darknet_ros_3d/view_points", 1);
+            output_view_points_topic_, 1);
 
         human_points_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-            "/darknet_ros_3d/human_points", 1);
+            output_human_points_topic_, 1);
 
         last_detection_ts_ = clock_.now();
 
@@ -383,11 +387,10 @@ namespace darknet_ros_3d
 
         try
         {
-            // remove the '/' from the point cloud frame id
-            std::string frame_id = point_cloud_.header.frame_id.substr(1, -1);
+            std::string frame_id = point_cloud_.header.frame_id;
             camera_transform = tfBuffer_.lookupTransform(working_frame_, frame_id,
                                                   point_cloud_.header.stamp, tf2::durationFromSec(2.0));
-            base_transform = tfBuffer_.lookupTransform("base_link", working_frame_, 
+            base_transform = tfBuffer_.lookupTransform(transform_frame_, working_frame_, 
                                                 point_cloud_.header.stamp, tf2::durationFromSec(2.0));
         }
         catch (tf2::TransformException &ex)
@@ -425,8 +428,13 @@ namespace darknet_ros_3d
 
         this->get_parameter("darknet_ros_topic", input_bbx_topic_);
         this->get_parameter("output_bbx3d_topic", output_bbx3d_topic_);
+        this->get_parameter("output_markers_topic", output_markers_topic_);
+        this->get_parameter("output_view_points_topic", output_view_points_topic_);
+        this->get_parameter("output_human_points_topic", output_human_points_topic_);
         this->get_parameter("point_cloud_topic", pointcloud_topic_);
+        this->get_parameter("camera_info_topic", camera_info_topic_);
         this->get_parameter("working_frame", working_frame_);
+        this->get_parameter("transform_frame", transform_frame_);
         this->get_parameter("ground_detection_threshold", ground_detection_threshold_);
         this->get_parameter("minimum_probability", minimum_probability_);
         this->get_parameter("interested_classes", interested_classes_);
