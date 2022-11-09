@@ -7,6 +7,8 @@ darknet3d_node:
     output_human_points_topic: /darknet_ros_3d/human_points
     point_cloud_topic: /rear_velodyne/points
     camera_info_topic: /rear_camera/color/camera_info
+    camera_image_topic: /darknet_ros/detection_image
+    bbx3d_tolerance: 0.4
     working_frame: rear_camera_link
     transform_frame: base_footprint
     ground_detection_threshold: 0.5

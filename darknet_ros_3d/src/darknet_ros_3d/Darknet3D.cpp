@@ -25,6 +25,7 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -62,6 +63,8 @@ namespace darknet_ros_3d
         this->declare_parameter("output_human_points_topic", "/darknet_ros_3d/human_points");
         this->declare_parameter("point_cloud_topic", "/velodyne_points");
         this->declare_parameter("camera_info_topic", "/camera/camera_info");
+        this->declare_parameter("camera_image_topic", "/darknet_ros/detection_image");
+        this->declare_parameter("bbx3d_tolerance", 0.4f);
         this->declare_parameter("working_frame", "camera_link");
         this->declare_parameter("transform_frame", "base_link");
         this->declare_parameter("ground_detection_threshold", 0.3f);
@@ -77,6 +80,9 @@ namespace darknet_ros_3d
 
         camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             camera_info_topic_, 1, std::bind(&Darknet3D::infoCb, this, std::placeholders::_1));
+
+        camera_image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            camera_image_topic_, 1, std::bind(&Darknet3D::cameraCb, this, std::placeholders::_1));
 
         darknet3d_pub_ = this->create_publisher<gb_visual_detection_3d_msgs::msg::BoundingBoxes3d>(
             output_bbx3d_topic_, 100);
@@ -113,6 +119,13 @@ namespace darknet_ros_3d
     Darknet3D::infoCb(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
     {
         camera_info_ = *msg;
+        last_detection_ts_ = clock_.now();
+    }
+
+    void
+    Darknet3D::cameraCb(const sensor_msgs::msg::Image::SharedPtr msg)
+    {
+        camera_image_ = *msg;
         last_detection_ts_ = clock_.now();
     }
 
@@ -181,6 +194,13 @@ namespace darknet_ros_3d
         return *new_cloud;
     }
 
+    visualization_msgs::msg::Marker
+    Darknet3D::augment_image(pcl::PointCloud<pcl::PointXYZ> result_cloud) {
+        visualization_msgs::msg::Marker points;
+
+        return points;
+    }
+
     void
     Darknet3D::calculate_boxes(
         sensor_msgs::msg::PointCloud2 cloud_pc2,
@@ -196,7 +216,7 @@ namespace darknet_ros_3d
         cam_model.fromCameraInfo(camera_info_);
 
         // List to hold the points clouds that contain all the people in the frame
-        std::vector<pcl::PointCloud<pcl::PointXYZ>> point_cloud_list;
+        std::vector<pcl::PointCloud<pcl::PointXYZRGB>> point_cloud_list;
         pcl::PointCloud<pcl::PointXYZ> points_in_view = calculate_view_points(cloud, cam_model);
 
         // Loop through the bounding boxes
@@ -211,10 +231,10 @@ namespace darknet_ros_3d
             center = cam_model.projectPixelTo3dRay(cv::Point2d(center_x, center_y));
 
             // setup point indices to extract only the points on the human
-            pcl::PointCloud<pcl::PointXYZ>::Ptr new_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+            pcl::PointCloud<pcl::PointXYZRGB>::Ptr new_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
             pcl::copyPointCloud(points_in_view, *new_cloud);
             pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
-            pcl::ExtractIndices<pcl::PointXYZ> extract;
+            pcl::ExtractIndices<pcl::PointXYZRGB> extract;
 
             // Ignore bounding boxes with lower probabilities and all other classes
             if (bbx.probability < minimum_probability_ || bbx.class_id == "dont_show")
@@ -298,11 +318,59 @@ namespace darknet_ros_3d
             extract.setIndices(inliers);
             extract.setNegative(true);
             extract.filter(*new_cloud);
+
+            // convert the sensor message image to a opencv image
+            cv_bridge::CvImagePtr cv_image;
+            cv_image = cv_bridge::toCvCopy(camera_image_, camera_image_.encoding);
+
+            // Further reduce the points on the human by only keeping the points
+            // that lie within the new bounding box
+            pcl::PointIndices::Ptr inliers_human(new pcl::PointIndices());
+            pcl::ExtractIndices<pcl::PointXYZRGB> extract_human;
+            for (std::size_t i = 0; i < new_cloud->size(); i++) {
+                // Extract the xyz values from the point
+                float xx = new_cloud->points[i].x;
+                float yy = new_cloud->points[i].y;
+                float zz = new_cloud->points[i].z;
+
+                if (xx >= bbx_msg.xmin-bbx3d_tolerance_ && xx <= bbx_msg.xmax+bbx3d_tolerance_ &&
+                    yy >= bbx_msg.ymin-bbx3d_tolerance_ && yy <= bbx_msg.ymax+bbx3d_tolerance_ &&
+                    zz >= bbx_msg.zmin-bbx3d_tolerance_ && zz <= bbx_msg.zmax+bbx3d_tolerance_ ) {
+
+                    // edit the point in the point cloud to have the rgb pixel 
+                    // value of the image
+                    // Project 3d lidar point to 2d pixel point on the image
+                    cv::Point3d point3d;
+                    point3d = cv::Point3d(-yy, -zz, xx);
+                    cv::Point2d point2d = cam_model.project3dToPixel(point3d);
+
+                    // get the BGR values of the pixel
+                    int b = cv_image->image.at<cv::Vec3b>(point2d.x, point2d.y)[0];
+                    int g = cv_image->image.at<cv::Vec3b>(point2d.x, point2d.y)[1];
+                    int r = cv_image->image.at<cv::Vec3b>(point2d.x, point2d.y)[2];
+                    
+                    new_cloud->points[i].r = r;
+                    new_cloud->points[i].g = g;
+                    new_cloud->points[i].b = b;
+                    
+                } else {
+                    // Remove the point not on the human 
+                    inliers_human->indices.push_back(i);
+                }
+            }
+
+            // filter the cloud to only include the points on the person
+            // Second filter of the point cloud displaying human
+            extract_human.setInputCloud(new_cloud);
+            extract_human.setIndices(inliers_human);
+            extract_human.setNegative(true);
+            extract_human.filter(*new_cloud);
+
             point_cloud_list.push_back(*new_cloud);
         }
 
-        // For every bounding box, add the points inside it to a overal point cloud
-        pcl::PointCloud<pcl::PointXYZ> result_cloud;
+        // For every bounding box, add the points inside it to a overall point cloud
+        pcl::PointCloud<pcl::PointXYZRGB> result_cloud;
         if (point_cloud_list.size() != 0) {
             result_cloud = point_cloud_list[0];
             for (int i = 1; i < point_cloud_list.size(); i++) {
@@ -388,6 +456,7 @@ namespace darknet_ros_3d
         try
         {
             std::string frame_id = point_cloud_.header.frame_id;
+            // std::string frame_id = point_cloud_.header.frame_id.substr(1, -1);
             camera_transform = tfBuffer_.lookupTransform(working_frame_, frame_id,
                                                   point_cloud_.header.stamp, tf2::durationFromSec(2.0));
             base_transform = tfBuffer_.lookupTransform(transform_frame_, working_frame_, 
@@ -433,6 +502,8 @@ namespace darknet_ros_3d
         this->get_parameter("output_human_points_topic", output_human_points_topic_);
         this->get_parameter("point_cloud_topic", pointcloud_topic_);
         this->get_parameter("camera_info_topic", camera_info_topic_);
+        this->get_parameter("camera_image_topic", camera_image_topic_);
+        this->get_parameter("bbx3d_tolerance", bbx3d_tolerance_);
         this->get_parameter("working_frame", working_frame_);
         this->get_parameter("transform_frame", transform_frame_);
         this->get_parameter("ground_detection_threshold", ground_detection_threshold_);
